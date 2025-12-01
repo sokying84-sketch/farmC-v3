@@ -215,9 +215,9 @@ const InventoryPage: React.FC = () => {
                      const margin = ((item.sellingPrice - estCost) / item.sellingPrice) * 100;
                      return (
                    <div key={idx} className="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden group hover:shadow-md transition-all relative">
-                      <div className="h-32 bg-slate-200 relative">
+                      <div className="h-48 bg-white relative border-b border-slate-100">
                           {item.imageUrl ? (
-                              <img src={item.imageUrl} alt={item.recipeName} className="w-full h-full object-cover"/>
+                              <img src={item.imageUrl} alt={item.recipeName} className="w-full h-full object-contain p-2"/>
                           ) : (
                               <div className="w-full h-full flex items-center justify-center text-slate-300">
                                   <ImageIcon size={32}/>
@@ -269,6 +269,7 @@ const InventoryPage: React.FC = () => {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
               <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6">
                   <h3 className="text-lg font-bold mb-4">Update Product Image</h3>
+                  <p className="text-sm text-slate-500 mb-4">Recommended Size: 500x500px or 800x600px (JPG/PNG)</p>
                   <label className="flex flex-col items-center justify-center w-full p-6 border-2 border-dashed border-slate-300 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors">
                       <Upload size={32} className="text-slate-400 mb-2"/>
                       <span className="text-sm font-bold text-slate-600">Click to Upload</span>
