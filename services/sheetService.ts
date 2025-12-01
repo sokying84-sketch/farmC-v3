@@ -1,3 +1,5 @@
+
+
 import { MushroomBatch, BatchStatus, ApiResponse, InventoryItem, PurchaseOrder, SalesRecord, Customer, FinishedGood, SalesStatus, PaymentMethod, DailyCostMetrics, Supplier, Recipe } from '../types';
 import { db, auth, storage } from './firebase';
 import { collection, doc, setDoc, getDocs, updateDoc, deleteDoc, query, orderBy, where, serverTimestamp, addDoc } from 'firebase/firestore';
@@ -123,10 +125,13 @@ service firebase.storage {
 export const getRecipes = async (): Promise<Recipe[]> => {
     const colRef = getUserCollection('recipes');
     if (colRef) {
+        console.log("📚 Fetching recipes from Firestore...");
         const snap = await getDocs(colRef);
+        console.log(`✅ Found ${snap.size} recipes in Firestore.`);
         return snap.docs.map(d => ({ id: d.id, ...d.data() } as Recipe));
     }
     // Fallback to local storage for demo/unauthenticated
+    console.warn("⚠️ Fetching recipes from LocalStorage (Auth missing)");
     const stored = localStorage.getItem('shroomtrack_recipes');
     return stored ? JSON.parse(stored) : [];
 };
@@ -146,6 +151,7 @@ export const saveRecipe = async (recipe: Recipe, imageFile?: File): Promise<ApiR
     const recipeData = { ...recipe, imageUrl };
     
     if (user) {
+        console.log(`💾 Saving recipe ${recipe.name} to Firestore for user ${user.uid}`);
         // Firestore Save
         const docRef = recipe.id.startsWith('r-') || recipe.id.startsWith('rec-') 
             ? getUserDoc('recipes', recipe.id) 
@@ -160,6 +166,7 @@ export const saveRecipe = async (recipe: Recipe, imageFile?: File): Promise<ApiR
         await setDoc(docRef, cleanFirestoreData(recipeData), { merge: true });
         return { success: true, data: recipeData };
     } else {
+        console.warn(`💾 Saving recipe ${recipe.name} to LocalStorage (User not authenticated)`);
         // LocalStorage Fallback
         const recipes = await getRecipes();
         const idx = recipes.findIndex(r => r.id === recipe.id);
@@ -176,16 +183,21 @@ export const saveRecipe = async (recipe: Recipe, imageFile?: File): Promise<ApiR
 };
 
 export const deleteRecipe = async (id: string): Promise<boolean> => {
-    const docRef = getUserDoc('recipes', id);
-    if (docRef) {
-        await deleteDoc(docRef);
+    try {
+        const docRef = getUserDoc('recipes', id);
+        if (docRef) {
+            await deleteDoc(docRef);
+            return true;
+        }
+        // Local fallback
+        const recipes = await getRecipes();
+        const updated = recipes.filter(r => r.id !== id);
+        localStorage.setItem('shroomtrack_recipes', JSON.stringify(updated));
         return true;
+    } catch (e) {
+        console.error("Error deleting recipe:", e);
+        return false;
     }
-    // Local fallback
-    const recipes = await getRecipes();
-    const updated = recipes.filter(r => r.id !== id);
-    localStorage.setItem('shroomtrack_recipes', JSON.stringify(updated));
-    return true;
 };
 
 // ============================================================================
@@ -306,6 +318,12 @@ let mockPurchaseOrders: PurchaseOrder[] = [];
 let mockCustomers: Customer[] = [];
 let mockSales: SalesRecord[] = [];
 let mockDailyCosts: DailyCostMetrics[] = [];
+
+// READ-YOUR-WRITES BUFFER
+// Track when the last local write occurred. If very recent, prefer local cache over server data
+// to prevent "stale" reads causing UI flicker (e.g., inventory jumping back up after deduction).
+let lastWriteTime = 0;
+const WRITE_BUFFER_MS = 2000; // 2 seconds
 
 // Helper to log transactional cost
 const recordCostTransaction = async (
@@ -600,15 +618,66 @@ export const packBatchPartial = async (
       await setDoc(fgDocRef, cleanFirestoreData(newFinishedGood));
   }
 
-  // INVENTORY DEDUCTION (DYNAMIC SEARCH)
-  // Instead of hardcoded IDs like 'inv-pouch', search for matching items by subtype
-  const containerItem = mockInventory.find(i => i.subtype === packagingType);
-  const labelItem = mockInventory.find(i => i.subtype === 'STICKER' || i.type === 'LABEL');
+  // INVENTORY DEDUCTION (SMART LOOP: FIND ALL MATCHING & CONSUME)
+  const deductStock = async (subtype: string, quantityToDeduct: number) => {
+     // Robust filter: Check subtype OR name (case insensitive) for legacy data compatibility
+     const items = mockInventory.filter(i => {
+         // 1. Strict Subtype Match
+         if (i.subtype === subtype) return true;
+         
+         // 2. Special Case: Labels
+         if (subtype === 'STICKER' && (i.type === 'LABEL' || i.name.toUpperCase().includes('STICKER') || i.name.toUpperCase().includes('LABEL'))) return true;
+         
+         // 3. Fallback: Name contains subtype (e.g. "Pouch" in "Vacuum Pouches")
+         if (i.name.toUpperCase().includes(subtype)) return true;
+         
+         return false;
+     });
+     
+     // Sort by quantity ascending (use up small batches first?) or id? 
+     // Let's sort by ID to be deterministic, or quantity > 0 first.
+     // Prioritize items with positive quantity
+     items.sort((a, b) => b.quantity - a.quantity);
+     
+     let remaining = quantityToDeduct;
+     
+     // Pass 1: Deduct from items with positive quantity
+     for (const item of items) {
+         if (remaining <= 0) break;
+         
+         const available = item.quantity;
+         
+         // If this item has stock, take from it
+         if (available > 0) {
+             const take = Math.min(available, remaining);
+             await updateInventory(item.id, -take);
+             remaining -= take;
+         }
+     }
+     
+     // Pass 2: If still remaining (deficit), force deduct from the first item found (or warn if none)
+     if (remaining > 0 && items.length > 0) {
+         await updateInventory(items[0].id, -remaining);
+     } else if (remaining > 0 && items.length === 0) {
+         console.warn(`No inventory item found for ${subtype} to deduct ${remaining}`);
+     }
+  };
+
+  // Deduct Containers (Pouch/Tin)
+  await deductStock(packagingType, packCount);
   
-  if (containerItem) await updateInventory(containerItem.id, -packCount);
-  if (labelItem) await updateInventory(labelItem.id, -packCount);
+  // Deduct Labels (Stickers)
+  await deductStock('STICKER', packCount);
 
   // AUTO LOG: PACKAGING USAGE COST (COGS)
+  // Calculate avg cost based on what we have (simplified: use first item cost found loosely)
+  const containerItem = mockInventory.find(i => 
+    i.subtype === packagingType || i.name.toUpperCase().includes(packagingType)
+  );
+  const labelItem = mockInventory.find(i => 
+    i.subtype === 'STICKER' || i.type === 'LABEL' || i.name.toUpperCase().includes('LABEL')
+  );
+
   let containerUnitCost = 0;
   if (containerItem) {
       containerUnitCost = containerItem.unitCost / (containerItem.packSize || 1);
@@ -742,6 +811,13 @@ export const updateFinishedGoodPrice = async (recipeName: string, packagingType:
 // INVENTORY & PROCUREMENT
 // ============================================================================
 export const getInventory = async (forceRemote = false): Promise<ApiResponse<InventoryItem[]>> => {
+  // READ-YOUR-WRITES BUFFER:
+  // If we recently wrote to the local cache, trust it over the server for a short time
+  // to prevent UI "flicker" where old server data overwrites new local data.
+  if (!forceRemote && (Date.now() - lastWriteTime < WRITE_BUFFER_MS)) {
+      return { success: true, data: [...mockInventory] };
+  }
+
   const colRef = getUserCollection('inventory');
   if (colRef) {
       const snap = await getDocs(colRef);
@@ -758,6 +834,9 @@ export const updateInventory = async (id: string, change: number, newCost?: numb
   if (index !== -1) {
     mockInventory[index].quantity += change;
     if (newCost !== undefined) mockInventory[index].unitCost = newCost;
+    
+    // UPDATE TIMESTAMP
+    lastWriteTime = Date.now();
     
     // Firestore Sync
     const docRef = getUserDoc('inventory', id);
@@ -778,13 +857,17 @@ export const addInventoryItem = async (item: InventoryItem): Promise<ApiResponse
       // Sync update
       const docRef = getUserDoc('inventory', exists.id);
       if (docRef) await setDoc(docRef, cleanFirestoreData(exists));
+      
+      lastWriteTime = Date.now();
       return { success: true, data: exists };
   }
   mockInventory.push(item);
+  
   // Sync new
   const docRef = getUserDoc('inventory', item.id);
   if (docRef) await setDoc(docRef, cleanFirestoreData(item));
-
+  
+  lastWriteTime = Date.now();
   return { success: true, data: item };
 };
 
@@ -794,6 +877,7 @@ export const deleteInventoryItem = async (id: string): Promise<ApiResponse<boole
   const docRef = getUserDoc('inventory', id);
   if (docRef) await deleteDoc(docRef);
   
+  lastWriteTime = Date.now();
   return { success: true, message: "Item deleted" };
 };
 

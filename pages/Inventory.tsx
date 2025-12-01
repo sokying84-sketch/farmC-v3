@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { getFinishedGoods, getInventory, updateFinishedGoodImage, updateFinishedGoodPrice, addInventoryItem, getSuppliers, deleteInventoryItem } from '../services/sheetService';
 import { FinishedGood, InventoryItem, Supplier } from '../types';
@@ -336,7 +337,7 @@ const InventoryPage: React.FC = () => {
                       <div className="grid grid-cols-2 gap-3">
                            <div>
                               <label className="block text-xs font-bold text-slate-500 mb-1">Unit Cost</label>
-                              <input type="number" className="w-full p-2 border rounded" required value={newItem.unitCost} onChange={e => setNewItem({...newItem, unitCost: parseFloat(e.target.value)})} />
+                              <input type="number" placeholder="45.00" className="w-full p-2 border rounded" required value={newItem.unitCost} onChange={e => setNewItem({...newItem, unitCost: parseFloat(e.target.value)})} />
                            </div>
                            <div>
                               <label className="block text-xs font-bold text-slate-500 mb-1">Supplier</label>
@@ -344,6 +345,10 @@ const InventoryPage: React.FC = () => {
                                   <option value="">Select Supplier...</option>
                                   {suppliers.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
                               </select>
+                           </div>
+                           <div>
+                              <label className="block text-xs font-bold text-slate-500 mb-1">Pack Size (Units)</label>
+                              <input type="number" placeholder="100" className="w-full p-2 border rounded" value={newItem.packSize} onChange={e => setNewItem({...newItem, packSize: parseFloat(e.target.value)})} />
                            </div>
                       </div>
                       <button type="submit" className="w-full py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700">Add Item</button>

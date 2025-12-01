@@ -1,70 +1,145 @@
+
 import React, { useEffect, useState, useRef } from 'react';
 import { fetchBatches, updateBatchStatus, getRecipes, saveRecipe, deleteRecipe } from '../services/sheetService';
 import { MushroomBatch, BatchStatus, Recipe, ProcessConfig } from '../types';
-import { ThermometerSun, CheckCircle, Clock, Play, RotateCcw, Utensils, BookOpen, Plus, Trash2, ChefHat, Flame, Image as ImageIcon, X, Waves, Wind, ShieldAlert, Upload, Pencil, FastForward, AlertTriangle, RefreshCw } from 'lucide-react';
+import { ThermometerSun, CheckCircle, Clock, Play, RotateCcw, Utensils, BookOpen, Plus, Trash2, ChefHat, Flame, Image as ImageIcon, X, Waves, Wind, ShieldAlert, Upload, Pencil, FastForward, AlertTriangle, RefreshCw, CopyMinus, Scale, ArrowRight, LayoutGrid, Cloud, WifiOff } from 'lucide-react';
+import { auth } from '../services/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 
-const DEFAULT_RECIPES: Recipe[] = [
-  { 
-    id: 'r1', 
-    name: 'Original Sea Salt Chips', 
-    type: 'CHIPS', 
-    baseWeightKg: 0.5,
-    cookTimeMinutes: 10, 
-    temperature: 160, 
-    notes: 'Standard fry. Lightly salt immediately.',
-    imageUrl: 'https://images.unsplash.com/photo-1623689436442-f0464c147775?q=80&w=600&auto=format&fit=crop'
-  },
-  { 
-    id: 'r2', 
-    name: 'Spicy Mala Chips', 
-    type: 'CHIPS', 
-    baseWeightKg: 0.5,
-    cookTimeMinutes: 12, 
-    temperature: 155, 
-    notes: 'Double fry method.',
-    imageUrl: 'https://images.unsplash.com/photo-1604173872221-39688df20485?q=80&w=600&auto=format&fit=crop'
-  },
-  { 
-    id: 'r3', 
-    name: 'Premium Whole Dried', 
-    type: 'DRIED', 
-    baseWeightKg: 0.5,
-    cookTimeMinutes: 20, 
-    temperature: 45, 
-    notes: 'Dehydrate only.',
-    imageUrl: 'https://images.unsplash.com/photo-1542444459-0df2fa639536?q=80&w=600&auto=format&fit=crop'
-  },
-];
+// EMPTIED DEFAULT RECIPES AS REQUESTED
+const DEFAULT_RECIPES: Recipe[] = [];
 
 const useRecipes = () => {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
-
-  useEffect(() => {
-    loadRecipes();
-  }, []);
+  const [isCloud, setIsCloud] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [isAuthReady, setIsAuthReady] = useState(false);
 
   const loadRecipes = async () => {
+      setLoading(true);
+      // Add a small safety delay to ensure auth state is propagated to sheetService
+      await new Promise(r => setTimeout(r, 500)); 
+      
       const data = await getRecipes();
-      if (data.length === 0) setRecipes(DEFAULT_RECIPES);
-      else setRecipes(data);
+      
+      // SEEDING LOGIC: Only if defaults exist (Currently empty)
+      const hasSeeded = localStorage.getItem('shroomtrack_recipes_seeded_init'); 
+      
+      if (data.length === 0 && !hasSeeded && DEFAULT_RECIPES.length > 0) {
+          console.log("Initializing default recipes in database...");
+          await Promise.all(DEFAULT_RECIPES.map(r => saveRecipe(r)));
+          localStorage.setItem('shroomtrack_recipes_seeded_init', 'true');
+          const newData = await getRecipes();
+          setRecipes(newData.length > 0 ? newData : DEFAULT_RECIPES);
+      } else {
+          setRecipes(data);
+      }
+      setLoading(false);
   };
 
+  useEffect(() => {
+    // Listen for Auth State changes to ensure we have a user before fetching
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+        if (user) {
+            console.log("✅ Processing Floor: Connected to Cloud DB as", user.uid);
+            setIsCloud(true);
+            setIsAuthReady(true);
+            loadRecipes(); // Only load AFTER we are sure we have a user
+        } else {
+            console.warn("⚠️ Processing Floor: Disconnected/Offline. Using Local Storage.");
+            setIsCloud(false);
+            setIsAuthReady(true);
+            loadRecipes(); // Load offline data
+        }
+    });
+    return () => unsubscribe();
+  }, []);
+
   const handleAddRecipe = async (recipe: Recipe, file?: File) => {
+    if (!isAuthReady) {
+        alert("Still connecting to database... please wait.");
+        return;
+    }
     await saveRecipe(recipe, file);
     loadRecipes();
   };
 
   const handleUpdateRecipe = async (updatedRecipe: Recipe, file?: File) => {
+    if (!isAuthReady) return;
     await saveRecipe(updatedRecipe, file);
     loadRecipes();
   };
 
   const handleDeleteRecipe = async (id: string) => {
+    if (!isAuthReady) return;
+    if (!window.confirm("Are you sure you want to delete this recipe?")) return;
+    // Optimistic Update
+    setRecipes(prev => prev.filter(r => r.id !== id));
     await deleteRecipe(id);
     loadRecipes();
   };
 
-  return { recipes, addRecipe: handleAddRecipe, updateRecipe: handleUpdateRecipe, deleteRecipe: handleDeleteRecipe };
+  const handleDeleteAllRecipes = async () => {
+      if (!isAuthReady) return;
+      if (!window.confirm("WARNING: This will delete ALL recipes. Are you sure?")) return;
+      const allIds = recipes.map(r => r.id);
+      setRecipes([]); // Optimistic clear
+      for (const id of allIds) {
+          await deleteRecipe(id);
+      }
+      localStorage.removeItem('shroomtrack_recipes_seeded_init'); // Reset seed flag
+      alert("All recipes cleared.");
+      loadRecipes();
+  };
+
+  const handleRemoveDuplicates = async () => {
+      if (!isAuthReady) return;
+      if (!window.confirm("This will find recipes with the exact same name and delete the extras, keeping only one of each. Continue?")) return;
+      
+      try {
+          // Fetch fresh list to avoid stale state issues
+          const currentRecipes = await getRecipes();
+          
+          const seenNames = new Set<string>();
+          const toDelete: string[] = [];
+          const unique: Recipe[] = [];
+
+          // Identify duplicates
+          for (const r of currentRecipes) {
+              const normalizedName = r.name.trim().toLowerCase();
+              if (seenNames.has(normalizedName)) {
+                  toDelete.push(r.id);
+              } else {
+                  seenNames.add(normalizedName);
+                  unique.push(r);
+              }
+          }
+
+          if (toDelete.length === 0) {
+              alert("No duplicates found.");
+              return;
+          }
+
+          // Optimistic Update
+          setRecipes(unique);
+
+          // Perform deletions in parallel for speed
+          const deletePromises = toDelete.map(id => deleteRecipe(id).catch(err => {
+              console.error(`Failed to delete ${id}`, err);
+              return false;
+          }));
+
+          await Promise.all(deletePromises);
+          
+          alert(`Cleanup complete. Removed ${toDelete.length} duplicate recipes.`);
+          loadRecipes(); // Final sync
+      } catch (error) {
+          console.error("Error removing duplicates:", error);
+          alert("An error occurred while removing duplicates. Please check console.");
+      }
+  };
+
+  return { recipes, isCloud, loading, addRecipe: handleAddRecipe, updateRecipe: handleUpdateRecipe, deleteRecipe: handleDeleteRecipe, deleteAllRecipes: handleDeleteAllRecipes, removeDuplicates: handleRemoveDuplicates };
 };
 
 const useNow = () => {
@@ -96,7 +171,7 @@ const PersistentBatchCard: React.FC<{
   
   const [showModal, setShowModal] = useState(false);
   const [showSwitchModal, setShowSwitchModal] = useState(false);
-  const activeRecipe = recipes.find(r => r.name === batch.selectedRecipeName) || recipes[0];
+  const activeRecipe = recipes.find(r => r.name === batch.selectedRecipeName) || recipes[0] || { name: 'Unknown', type: 'CHIPS', imageUrl: '' };
 
   let stage: 'WASH' | 'DRAIN' | 'COOK' | 'COMPLETE' = 'WASH';
   let timeLeft = 0;
@@ -320,7 +395,16 @@ const PersistentBatchCard: React.FC<{
             <div className="w-16 h-16 mx-auto bg-slate-50 rounded-full flex items-center justify-center text-slate-300 mb-4">
               <ChefHat size={32} />
             </div>
-            <button onClick={() => setShowModal(true)} className="w-full py-3 bg-nature-600 text-white rounded-xl font-bold shadow hover:bg-nature-700 transition-all flex items-center justify-center">
+            <button 
+                onClick={() => {
+                    if (recipes.length === 0) {
+                        alert("Please create a recipe first!");
+                    } else {
+                        setShowModal(true);
+                    }
+                }} 
+                className="w-full py-3 bg-nature-600 text-white rounded-xl font-bold shadow hover:bg-nature-700 transition-all flex items-center justify-center"
+            >
               <Play size={18} className="mr-2" /> Start Processing
             </button>
           </div>
@@ -365,6 +449,7 @@ const RecipeSelectorModal: React.FC<{
               </div>
             </button>
           ))}
+          {recipes.length === 0 && <p className="col-span-2 text-center text-slate-400 italic">No recipes available. Go to Recipes tab to create one.</p>}
         </div>
       </div>
     </div>
@@ -375,7 +460,7 @@ const ProcessingPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'floor' | 'recipes'>('floor');
   const [batches, setBatches] = useState<MushroomBatch[]>([]);
   const [loading, setLoading] = useState(true);
-  const { recipes, addRecipe, deleteRecipe, updateRecipe } = useRecipes();
+  const { recipes, addRecipe, deleteRecipe, updateRecipe, deleteAllRecipes, removeDuplicates, isCloud, loading: recipesLoading } = useRecipes();
 
   // Recipe Modal State
   const [showRecipeModal, setShowRecipeModal] = useState(false);
@@ -479,6 +564,18 @@ const ProcessingPage: React.FC = () => {
   const handleSaveRecipe = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingRecipe.name) return;
+
+    // VALIDATION: Prevent duplicates
+    const isDuplicate = recipes.some(r => 
+        r.name.toLowerCase() === editingRecipe.name?.toLowerCase() && 
+        r.id !== editingRecipe.id // Ignore self if updating
+    );
+
+    if (isDuplicate) {
+        alert("A recipe with this name already exists!");
+        return;
+    }
+
     const recipeData = {
         id: editingRecipe.id || `r-${Date.now()}`,
         name: editingRecipe.name,
@@ -514,6 +611,17 @@ const ProcessingPage: React.FC = () => {
       <div className="flex justify-between items-center flex-shrink-0">
         <h2 className="text-2xl font-bold text-slate-900 flex items-center">
             <Utensils className="mr-3 text-earth-600" size={32} /> Processing Floor
+            <div className="ml-4 flex items-center">
+                 {isCloud ? (
+                     <span className="text-[10px] bg-green-50 text-green-700 border border-green-200 px-2 py-1 rounded-full flex items-center font-bold uppercase tracking-wider">
+                        <Cloud size={10} className="mr-1" /> Cloud Sync
+                     </span>
+                 ) : (
+                     <span className="text-[10px] bg-orange-50 text-orange-700 border border-orange-200 px-2 py-1 rounded-full flex items-center font-bold uppercase tracking-wider">
+                        <WifiOff size={10} className="mr-1" /> Local Mode
+                     </span>
+                 )}
+            </div>
         </h2>
         <div className="bg-slate-200 p-1 rounded-lg flex text-sm font-medium">
           <button onClick={refreshData} className="px-3 py-2 text-slate-600 hover:text-slate-900 mr-2" title="Force Refresh">
@@ -549,28 +657,127 @@ const ProcessingPage: React.FC = () => {
       )}
 
       {activeTab === 'recipes' && (
-        <div className="flex-1 overflow-auto">
-          <div className="mb-6 flex justify-end">
-              <button onClick={() => { setEditingRecipe({ baseWeightKg: 0.5 }); setRecipeImageFile(null); setShowRecipeModal(true); }} className="px-6 py-3 bg-nature-600 text-white rounded-lg font-bold flex items-center shadow hover:bg-nature-700">
-                  <Plus size={20} className="mr-2" /> Add New Recipe
-              </button>
+        <div className="flex-1 overflow-auto bg-slate-50 rounded-2xl p-6 border border-slate-100">
+          {/* Modern Header Toolbar */}
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+             <div>
+                <h3 className="text-xl font-bold text-slate-800 flex items-center"><BookOpen className="mr-2 text-earth-600" />Recipe Library</h3>
+                <p className="text-sm text-slate-500 mt-1">Manage standard operating procedures and processing parameters.</p>
+             </div>
+             <div className="flex items-center space-x-3 w-full md:w-auto">
+                <div className="flex space-x-1 bg-white p-1 rounded-lg border border-slate-200 shadow-sm">
+                   <button onClick={removeDuplicates} className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors" title="Remove Duplicates">
+                      <CopyMinus size={18} />
+                   </button>
+                   <div className="w-px bg-slate-200 my-1"></div>
+                   <button onClick={deleteAllRecipes} className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Clear All">
+                      <Trash2 size={18} />
+                   </button>
+                </div>
+                <button 
+                   onClick={() => { setEditingRecipe({ baseWeightKg: 0.5 }); setRecipeImageFile(null); setShowRecipeModal(true); }} 
+                   className="px-5 py-2.5 bg-nature-600 text-white rounded-lg font-bold shadow-sm hover:bg-nature-700 flex items-center transition-all"
+                >
+                    <Plus size={18} className="mr-2" /> New Recipe
+                </button>
+             </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-             {recipes.map(recipe => (
-               <div key={recipe.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden relative group">
-                  <div className="h-40 bg-slate-200">
-                     {recipe.imageUrl ? <img src={recipe.imageUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-slate-400"><ImageIcon size={32}/></div>}
+
+          {/* Redesigned Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pb-8">
+             {recipesLoading ? <div className="col-span-full py-20 text-center text-slate-400">Loading recipes from {isCloud ? 'cloud' : 'local storage'}...</div> : null}
+             {!recipesLoading && recipes.map(recipe => (
+               <div key={recipe.id} className="group bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden flex flex-col relative">
+                  {/* Image Area */}
+                  <div className="h-48 relative overflow-hidden bg-slate-100">
+                     {recipe.imageUrl ? (
+                        <img src={recipe.imageUrl} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" alt={recipe.name} />
+                     ) : (
+                        <div className="w-full h-full flex items-center justify-center text-slate-300 bg-slate-100">
+                           <ImageIcon size={40} className="opacity-50" />
+                        </div>
+                     )}
+                     <div className="absolute top-3 left-3">
+                        <span className="px-2.5 py-1 bg-white/90 backdrop-blur-sm text-slate-700 text-[10px] font-bold uppercase tracking-wider rounded-md shadow-sm border border-slate-100">
+                           {recipe.type || 'Standard'}
+                        </span>
+                     </div>
+                     {/* Hover Actions Overlay */}
+                     <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity flex space-x-2 translate-y-[-10px] group-hover:translate-y-0 duration-300">
+                        <button 
+                           onClick={() => { setEditingRecipe(recipe); setRecipeImageFile(null); setShowRecipeModal(true); }} 
+                           className="p-2 bg-white text-slate-700 rounded-full hover:text-blue-600 shadow-md hover:scale-110 transition-transform"
+                           title="Edit"
+                        >
+                           <Pencil size={16} />
+                        </button>
+                        <button 
+                           onClick={() => deleteRecipe(recipe.id)} 
+                           className="p-2 bg-white text-slate-700 rounded-full hover:text-red-600 shadow-md hover:scale-110 transition-transform"
+                           title="Delete"
+                        >
+                           <Trash2 size={16} />
+                        </button>
+                     </div>
                   </div>
-                  <div className="p-4">
-                     <h3 className="font-bold text-lg">{recipe.name}</h3>
-                     <p className="text-sm text-slate-500">{recipe.cookTimeMinutes} mins • {recipe.baseWeightKg}kg Base</p>
-                     <div className="mt-4 flex space-x-2">
-                        <button onClick={() => { setEditingRecipe(recipe); setRecipeImageFile(null); setShowRecipeModal(true); }} className="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-bold flex items-center justify-center"><Pencil size={14} className="mr-1"/> Edit</button>
-                        <button onClick={() => deleteRecipe(recipe.id)} className="p-2 bg-red-50 text-red-600 rounded-lg"><Trash2 size={18}/></button>
+
+                  {/* Content Area */}
+                  <div className="p-5 flex-1 flex flex-col">
+                     <h4 className="font-bold text-lg text-slate-900 mb-1 line-clamp-1 group-hover:text-nature-700 transition-colors">{recipe.name}</h4>
+                     
+                     {/* Metadata Badges */}
+                     <div className="flex items-center space-x-3 text-xs text-slate-600 mb-4 mt-2">
+                         <div className="flex items-center bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                            <Clock size={12} className="mr-1.5 text-slate-400" /> {recipe.cookTimeMinutes}m
+                         </div>
+                         <div className="flex items-center bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                            <Scale size={12} className="mr-1.5 text-slate-400" /> {recipe.baseWeightKg}kg
+                         </div>
+                         <div className="flex items-center bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                            <ThermometerSun size={12} className="mr-1.5 text-slate-400" /> {recipe.temperature || 160}°C
+                         </div>
+                     </div>
+                     
+                     {recipe.notes ? (
+                       <p className="text-xs text-slate-400 line-clamp-2 mb-4 flex-1">
+                          {recipe.notes}
+                       </p>
+                     ) : (
+                       <p className="text-xs text-slate-300 italic mb-4 flex-1">No additional notes.</p>
+                     )}
+                     
+                     <div className="mt-auto pt-4 border-t border-slate-50 flex justify-between items-center">
+                         <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest font-mono">
+                            #{recipe.id.slice(-4)}
+                         </span>
+                         <button 
+                            onClick={() => { setEditingRecipe(recipe); setRecipeImageFile(null); setShowRecipeModal(true); }}
+                            className="text-xs font-bold text-slate-400 group-hover:text-nature-600 flex items-center transition-colors"
+                         >
+                            Details <ArrowRight size={12} className="ml-1 opacity-0 group-hover:opacity-100 transition-opacity" />
+                         </button>
                      </div>
                   </div>
                </div>
              ))}
+             
+             {/* Empty State */}
+             {!recipesLoading && recipes.length === 0 && (
+               <div className="col-span-full py-20 text-center border-2 border-dashed border-slate-300 rounded-2xl bg-slate-50/50 flex flex-col items-center justify-center">
+                   <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-sm mb-6 text-slate-300 relative">
+                      <ChefHat size={40} />
+                      <div className="absolute top-0 right-0 w-6 h-6 bg-nature-500 rounded-full animate-ping opacity-20"></div>
+                   </div>
+                   <h3 className="text-xl font-bold text-slate-700">No Recipes Found</h3>
+                   <p className="text-slate-500 max-w-md mx-auto mt-2 text-sm mb-8">Create your first processing recipe to standardize production quality, timings, and yield targets.</p>
+                   <button 
+                      onClick={() => { setEditingRecipe({ baseWeightKg: 0.5 }); setRecipeImageFile(null); setShowRecipeModal(true); }}
+                      className="px-8 py-3 bg-nature-600 text-white rounded-xl font-bold shadow-lg hover:bg-nature-700 hover:shadow-xl transition-all transform hover:-translate-y-1"
+                   >
+                      Create First Recipe
+                   </button>
+               </div>
+             )}
           </div>
         </div>
       )}

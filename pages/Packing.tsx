@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from 'react';
 import { fetchBatches, packRecipeFIFO, getInventory, getPackingHistory } from '../services/sheetService';
 import { MushroomBatch, BatchStatus, InventoryItem, FinishedGood } from '../types';
@@ -100,24 +99,34 @@ const PackingPage: React.FC = () => {
     }, 3000);
   };
 
-  // Find dynamic inventory items instead of relying on exact IDs like 'inv-pouch'
-  // Look for items with matching SUBTYPE or name
-  const pouchItem = inventory.find(i => i.subtype === 'POUCH') || inventory.find(i => i.name.toLowerCase().includes('pouch'));
-  const tinItem = inventory.find(i => i.subtype === 'TIN') || inventory.find(i => i.name.toLowerCase().includes('tin'));
-  const labelItem = inventory.find(i => i.subtype === 'STICKER') || inventory.find(i => i.type === 'LABEL');
+  // Find dynamic inventory items: AGGREGATE ALL matching items
+  const pouchTotal = inventory
+    .filter(i => i.subtype === 'POUCH' || i.name.toLowerCase().includes('pouch'))
+    .reduce((sum, item) => sum + item.quantity, 0);
+
+  const tinTotal = inventory
+    .filter(i => i.subtype === 'TIN' || i.name.toLowerCase().includes('tin'))
+    .reduce((sum, item) => sum + item.quantity, 0);
+
+  const labelTotal = inventory
+    .filter(i => i.subtype === 'STICKER' || i.type === 'LABEL')
+    .reduce((sum, item) => sum + item.quantity, 0);
   
-  const containerItem = packagingType === 'POUCH' ? pouchItem : tinItem;
+  const containerTotal = packagingType === 'POUCH' ? pouchTotal : tinTotal;
   const needed = packCount ? parseInt(packCount) : calculatedYield;
   
-  const hasContainer = (containerItem?.quantity || 0) >= needed;
-  const hasLabels = (labelItem?.quantity || 0) >= needed;
+  const hasContainer = containerTotal >= needed;
+  const hasLabels = labelTotal >= needed;
   const hasStock = hasContainer && hasLabels;
 
   const isYieldValid = calculatedYield > 0;
   
   const missingItems = [];
-  if (!hasContainer) missingItems.push(`${needed - (containerItem?.quantity || 0)} ${packagingType === 'POUCH' ? 'Pouches' : 'Tins'}`);
-  if (!hasLabels) missingItems.push(`${needed - (labelItem?.quantity || 0)} Stickers`);
+  if (!hasContainer) missingItems.push(`${needed - containerTotal} ${packagingType === 'POUCH' ? 'Pouches' : 'Tins'}`);
+  if (!hasLabels) missingItems.push(`${needed - labelTotal} Stickers`);
+
+  // Default thresholds for visual display (simplified)
+  const THRESHOLD = 100; 
 
   return (
     <div className="space-y-6 relative">
@@ -130,24 +139,40 @@ const PackingPage: React.FC = () => {
         </div>
       )}
 
-      {/* HEADER: INVENTORY STATUS */}
+      {/* HEADER: INVENTORY STATUS (AGGREGATED) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[pouchItem, tinItem, labelItem].map((item, idx) => item ? (
-             <div key={item.id} className={`p-4 rounded-xl border flex items-center justify-between ${item.quantity < item.threshold ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
-                <div>
-                   <p className="text-xs font-bold text-slate-500 uppercase">{item.subtype || item.type}</p>
-                   <p className="font-bold text-slate-800">{item.name}</p>
-                </div>
-                <div className="text-right">
-                   <p className={`text-2xl font-bold ${item.quantity < item.threshold ? 'text-red-600' : 'text-slate-800'}`}>{item.quantity}</p>
-                   <p className="text-xs text-slate-400">{item.unit}</p>
-                </div>
-             </div>
-        ) : (
-            <div key={`missing-${idx}`} className="p-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 flex items-center justify-center text-slate-400 text-sm">
-                No {idx === 0 ? 'Pouch' : idx === 1 ? 'Tin' : 'Label'} Inventory Found
-            </div>
-        ))}
+          <div className={`p-4 rounded-xl border flex items-center justify-between ${pouchTotal < THRESHOLD ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+              <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase">PACKAGING</p>
+                  <p className="font-bold text-slate-800">Pouches (All Types)</p>
+              </div>
+              <div className="text-right">
+                  <p className={`text-2xl font-bold ${pouchTotal < THRESHOLD ? 'text-red-600' : 'text-slate-800'}`}>{pouchTotal}</p>
+                  <p className="text-xs text-slate-400">units</p>
+              </div>
+          </div>
+
+          <div className={`p-4 rounded-xl border flex items-center justify-between ${tinTotal < THRESHOLD ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+              <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase">PACKAGING</p>
+                  <p className="font-bold text-slate-800">Metal Tins</p>
+              </div>
+              <div className="text-right">
+                  <p className={`text-2xl font-bold ${tinTotal < THRESHOLD ? 'text-red-600' : 'text-slate-800'}`}>{tinTotal}</p>
+                  <p className="text-xs text-slate-400">units</p>
+              </div>
+          </div>
+
+          <div className={`p-4 rounded-xl border flex items-center justify-between ${labelTotal < THRESHOLD ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+              <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase">LABEL</p>
+                  <p className="font-bold text-slate-800">Stickers / Labels</p>
+              </div>
+              <div className="text-right">
+                  <p className={`text-2xl font-bold ${labelTotal < THRESHOLD ? 'text-red-600' : 'text-slate-800'}`}>{labelTotal}</p>
+                  <p className="text-xs text-slate-400">units</p>
+              </div>
+          </div>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">

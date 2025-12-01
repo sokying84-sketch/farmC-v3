@@ -39,7 +39,16 @@ const FinancePage: React.FC = () => {
   const [editingCost, setEditingCost] = useState<DailyCostMetrics | null>(null);
 
   // Supplier Form
-  const [newSupplier, setNewSupplier] = useState({ name: '', address: '', contact: '', itemName: '', itemType: 'PACKAGING', packSize: 100, unitCost: 10 });
+  const [newSupplier, setNewSupplier] = useState({ 
+    name: '', 
+    address: '', 
+    contact: '', 
+    itemName: '', 
+    itemType: 'PACKAGING', 
+    itemSubtype: 'POUCH', // Default subtype for new supplier items
+    packSize: 100, // Default pack size for Vacuum Pouches
+    unitCost: 45 // Default cost (RM 45) for Vacuum Pouches
+  });
 
   // Customer Form
   const [newCustomer, setNewCustomer] = useState({ name: '', email: '', contact: '', address: '' });
@@ -174,7 +183,7 @@ const FinancePage: React.FC = () => {
               id: `inv-${Date.now()}`,
               name: newSupplier.itemName,
               type: newSupplier.itemType as any,
-              subtype: undefined, 
+              subtype: newSupplier.itemSubtype as any, // Correctly pass subtype
               quantity: 0,
               threshold: 50,
               unit: 'units',
@@ -183,7 +192,7 @@ const FinancePage: React.FC = () => {
               packSize: newSupplier.packSize
           });
           setShowSupplierModal(false);
-          setNewSupplier({ name: '', address: '', contact: '', itemName: '', itemType: 'PACKAGING', packSize: 100, unitCost: 10 });
+          setNewSupplier({ name: '', address: '', contact: '', itemName: '', itemType: 'PACKAGING', itemSubtype: 'POUCH', packSize: 100, unitCost: 45 });
           refreshData();
       }
   };
@@ -704,13 +713,32 @@ const FinancePage: React.FC = () => {
                           <p className="text-xs font-bold text-slate-500">Primary Item Supplied</p>
                           <input placeholder="Item Name (e.g. Red Pouch)" className="w-full p-2 border rounded text-sm bg-white" required value={newSupplier.itemName} onChange={e => setNewSupplier({...newSupplier, itemName: e.target.value})} />
                           <div className="grid grid-cols-2 gap-2">
-                              <select className="p-2 border rounded text-sm bg-white" value={newSupplier.itemType} onChange={e => setNewSupplier({...newSupplier, itemType: e.target.value})}>
-                                  <option value="PACKAGING">Packaging</option>
-                                  <option value="LABEL">Label</option>
-                              </select>
-                              <input type="number" placeholder="Pack Size" className="p-2 border rounded text-sm bg-white" value={newSupplier.packSize} onChange={e => setNewSupplier({...newSupplier, packSize: parseInt(e.target.value)})} />
+                              <div>
+                                  <label className="block text-[10px] font-bold text-slate-400 mb-1">TYPE</label>
+                                  <select className="w-full p-2 border rounded text-sm bg-white" value={newSupplier.itemType} onChange={e => setNewSupplier({...newSupplier, itemType: e.target.value})}>
+                                      <option value="PACKAGING">Packaging</option>
+                                      <option value="LABEL">Label</option>
+                                  </select>
+                              </div>
+                              <div>
+                                  <label className="block text-[10px] font-bold text-slate-400 mb-1">SUBTYPE</label>
+                                  <select className="w-full p-2 border rounded text-sm bg-white" value={newSupplier.itemSubtype} onChange={e => setNewSupplier({...newSupplier, itemSubtype: e.target.value})}>
+                                      <option value="POUCH">Pouch</option>
+                                      <option value="TIN">Tin</option>
+                                      <option value="STICKER">Sticker</option>
+                                  </select>
+                              </div>
                           </div>
-                          <input type="number" placeholder="Cost per Pack (RM)" className="w-full p-2 border rounded text-sm bg-white" required value={newSupplier.unitCost} onChange={e => setNewSupplier({...newSupplier, unitCost: parseFloat(e.target.value)})} />
+                          <div className="grid grid-cols-2 gap-2">
+                               <div>
+                                  <label className="block text-[10px] font-bold text-slate-400 mb-1">PACK SIZE</label>
+                                  <input type="number" placeholder="100" className="w-full p-2 border rounded text-sm bg-white" value={newSupplier.packSize} onChange={e => setNewSupplier({...newSupplier, packSize: parseInt(e.target.value)})} />
+                               </div>
+                               <div>
+                                  <label className="block text-[10px] font-bold text-slate-400 mb-1">COST (RM)</label>
+                                  <input type="number" placeholder="10.00" className="w-full p-2 border rounded text-sm bg-white" required value={newSupplier.unitCost} onChange={e => setNewSupplier({...newSupplier, unitCost: parseFloat(e.target.value)})} />
+                               </div>
+                          </div>
                       </div>
 
                       <button type="submit" className="w-full py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 text-sm">Register Supplier & Item</button>
