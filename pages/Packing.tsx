@@ -1,0 +1,280 @@
+
+import React, { useEffect, useState } from 'react';
+import { fetchBatches, packRecipeFIFO, getInventory, getPackingHistory } from '../services/sheetService';
+import { MushroomBatch, BatchStatus, InventoryItem, FinishedGood } from '../types';
+import { Package, Box, AlertCircle, Clock, CheckCircle2, History, Scale, Layers } from 'lucide-react';
+
+type RecipeGroup = {
+  name: string;
+  totalWeight: number;
+  batchCount: number;
+};
+
+const PackingPage: React.FC = () => {
+  const [batches, setBatches] = useState<MushroomBatch[]>([]);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [history, setHistory] = useState<FinishedGood[]>([]);
+  
+  // State for Modal
+  const [selectedRecipe, setSelectedRecipe] = useState<RecipeGroup | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [isPacking, setIsPacking] = useState(false);
+  
+  const [packagingType, setPackagingType] = useState<'TIN' | 'POUCH'>('POUCH');
+  const [packCount, setPackCount] = useState<string>('');
+  const [weightToPack, setWeightToPack] = useState<string>('');
+  
+  const refreshData = async () => {
+    setLoading(true);
+    const [batchRes, invRes, histRes] = await Promise.all([fetchBatches(), getInventory(), getPackingHistory()]);
+    
+    if (batchRes.success && batchRes.data) {
+      // Filter out batches that are done but have NO remaining weight (disposed/empty)
+      const ready = batchRes.data.filter(b => 
+        ((b.status === BatchStatus.DRYING_COMPLETE && (b.remainingWeightKg === undefined || b.remainingWeightKg > 0.01))) || 
+        (b.status === BatchStatus.PACKED && (b.remainingWeightKg || 0) > 0.1)
+      );
+      setBatches(ready);
+    }
+    
+    if (invRes.success && invRes.data) setInventory(invRes.data);
+    if (histRes.success && histRes.data) setHistory(histRes.data);
+    setLoading(false);
+  };
+
+  useEffect(() => { refreshData(); }, []);
+
+  // Aggregation Logic: Group batches by Recipe
+  const groupedBatches = batches.reduce((acc, batch) => {
+      // Fallback: Try selectedRecipeName -> recipeType -> Unknown
+      const recipe = batch.selectedRecipeName || batch.recipeType || 'Unknown';
+      if (!acc[recipe]) {
+          acc[recipe] = { name: recipe, totalWeight: 0, batchCount: 0 };
+      }
+      acc[recipe].totalWeight += (batch.remainingWeightKg ?? batch.netWeightKg);
+      acc[recipe].batchCount += 1;
+      return acc;
+  }, {} as Record<string, RecipeGroup>);
+
+  const handleOpenPackModal = (recipeGroup: RecipeGroup) => {
+    setSelectedRecipe(recipeGroup);
+    setPackagingType('POUCH'); 
+    setWeightToPack('');
+    setPackCount('');
+    setShowModal(true);
+  };
+
+  const recipeRatio = selectedRecipe?.name?.toLowerCase().includes('dried') ? 0.3 : 0.4;
+  const packSize = packagingType === 'POUCH' ? 0.1 : 0.2;
+  const calculatedYield = weightToPack ? Math.floor((parseFloat(weightToPack) * recipeRatio) / packSize) : 0;
+
+  const handleCompletePacking = async () => {
+    if (!selectedRecipe || !weightToPack) return;
+    
+    if (calculatedYield <= 0) {
+        alert("Weight is too low to produce a single unit.");
+        return;
+    }
+    
+    setIsPacking(true);
+    
+    setTimeout(async () => {
+        const finalCount = packCount ? parseInt(packCount) : calculatedYield;
+        // Use FIFO logic to pack across batches
+        const res = await packRecipeFIFO(
+            selectedRecipe.name,
+            parseFloat(weightToPack),
+            finalCount,
+            packagingType
+        );
+
+        if (res.success) {
+            setShowModal(false);
+            setSelectedRecipe(null);
+            refreshData();
+        } else {
+            alert(res.message);
+        }
+        setIsPacking(false);
+    }, 3000);
+  };
+
+  // Find dynamic inventory items instead of relying on exact IDs like 'inv-pouch'
+  // Look for items with matching SUBTYPE or name
+  const pouchItem = inventory.find(i => i.subtype === 'POUCH') || inventory.find(i => i.name.toLowerCase().includes('pouch'));
+  const tinItem = inventory.find(i => i.subtype === 'TIN') || inventory.find(i => i.name.toLowerCase().includes('tin'));
+  const labelItem = inventory.find(i => i.subtype === 'STICKER') || inventory.find(i => i.type === 'LABEL');
+  
+  const containerItem = packagingType === 'POUCH' ? pouchItem : tinItem;
+  const needed = packCount ? parseInt(packCount) : calculatedYield;
+  
+  const hasContainer = (containerItem?.quantity || 0) >= needed;
+  const hasLabels = (labelItem?.quantity || 0) >= needed;
+  const hasStock = hasContainer && hasLabels;
+
+  const isYieldValid = calculatedYield > 0;
+  
+  const missingItems = [];
+  if (!hasContainer) missingItems.push(`${needed - (containerItem?.quantity || 0)} ${packagingType === 'POUCH' ? 'Pouches' : 'Tins'}`);
+  if (!hasLabels) missingItems.push(`${needed - (labelItem?.quantity || 0)} Stickers`);
+
+  return (
+    <div className="space-y-6 relative">
+      {/* PACKING TIMER OVERLAY */}
+      {isPacking && (
+        <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center text-white">
+            <div className="w-24 h-24 rounded-full border-4 border-nature-500 border-t-transparent animate-spin mb-6"></div>
+            <h2 className="text-3xl font-bold animate-pulse">Sealing & Labeling...</h2>
+            <p className="text-slate-300 mt-2">Allocating batches & updating inventory</p>
+        </div>
+      )}
+
+      {/* HEADER: INVENTORY STATUS */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {[pouchItem, tinItem, labelItem].map((item, idx) => item ? (
+             <div key={item.id} className={`p-4 rounded-xl border flex items-center justify-between ${item.quantity < item.threshold ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+                <div>
+                   <p className="text-xs font-bold text-slate-500 uppercase">{item.subtype || item.type}</p>
+                   <p className="font-bold text-slate-800">{item.name}</p>
+                </div>
+                <div className="text-right">
+                   <p className={`text-2xl font-bold ${item.quantity < item.threshold ? 'text-red-600' : 'text-slate-800'}`}>{item.quantity}</p>
+                   <p className="text-xs text-slate-400">{item.unit}</p>
+                </div>
+             </div>
+        ) : (
+            <div key={`missing-${idx}`} className="p-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 flex items-center justify-center text-slate-400 text-sm">
+                No {idx === 0 ? 'Pouch' : idx === 1 ? 'Tin' : 'Label'} Inventory Found
+            </div>
+        ))}
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+          <div>
+              <h3 className="font-semibold text-slate-800">Ready to Pack</h3>
+              <p className="text-xs text-slate-500">Grouped by Recipe (FIFO Strategy)</p>
+          </div>
+          <button onClick={refreshData} className="text-sm text-nature-600 hover:underline">Refresh</button>
+        </div>
+        {loading ? <div className="p-8 text-center text-slate-400">Loading...</div> : (
+          <table className="w-full text-left">
+              <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+                <tr>
+                    <th className="px-6 py-4">Recipe / Product</th>
+                    <th className="px-6 py-4">Avail. Batches</th>
+                    <th className="px-6 py-4">Total Remaining Weight</th>
+                    <th className="px-6 py-4 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {Object.values(groupedBatches).map((group: RecipeGroup, idx) => (
+                  <tr key={idx} className="hover:bg-slate-50">
+                    <td className="px-6 py-4 font-bold text-slate-800">{group.name}</td>
+                    <td className="px-6 py-4 text-slate-500 flex items-center">
+                        <Layers size={16} className="mr-2 text-earth-500"/> {group.batchCount} batches
+                    </td>
+                    <td className="px-6 py-4 font-bold text-nature-700">{group.totalWeight.toFixed(1)} kg</td>
+                    <td className="px-6 py-4 text-right">
+                      <button onClick={() => handleOpenPackModal(group)} className="px-4 py-2 bg-earth-800 text-white text-sm rounded-lg hover:bg-earth-900 shadow-sm flex items-center ml-auto">
+                        <Box size={16} className="mr-2" /> Pack
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {Object.keys(groupedBatches).length === 0 && (
+                    <tr><td colSpan={4} className="p-8 text-center text-slate-400">No batches ready for packing.</td></tr>
+                )}
+              </tbody>
+            </table>
+        )}
+      </div>
+
+      {/* PACKING HISTORY */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="p-6 border-b border-slate-100 flex items-center">
+            <History size={20} className="text-slate-400 mr-2" />
+            <h3 className="font-semibold text-slate-800">Recent Packing Activity</h3>
+        </div>
+        <div className="overflow-x-auto">
+           <table className="w-full text-left">
+              <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+                 <tr><th className="px-6 py-3">Packed Date</th><th className="px-6 py-3">Product</th><th className="px-6 py-3">Type</th><th className="px-6 py-3 text-right">Quantity</th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-sm">
+                 {history.map(item => (
+                    <tr key={item.id}>
+                       <td className="px-6 py-3 text-slate-500">{new Date(item.datePacked).toLocaleString()}</td>
+                       <td className="px-6 py-3 font-medium text-slate-800">{item.recipeName}</td>
+                       <td className="px-6 py-3"><span className="px-2 py-1 bg-slate-100 rounded text-xs font-bold text-slate-600">{item.packagingType}</span></td>
+                       <td className="px-6 py-3 text-right font-bold text-nature-700">{item.quantity} units</td>
+                    </tr>
+                 ))}
+                 {history.length === 0 && <tr><td colSpan={4} className="px-6 py-8 text-center text-slate-400">No packing history found.</td></tr>}
+              </tbody>
+           </table>
+        </div>
+      </div>
+
+      {showModal && selectedRecipe && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 animate-in zoom-in-95">
+             <h3 className="text-xl font-bold text-slate-900 mb-6">Pack {selectedRecipe.name}</h3>
+             
+             <div className="space-y-4">
+                <div>
+                   <label className="block text-sm font-bold text-slate-700 mb-1">Packaging Type</label>
+                   <div className="grid grid-cols-2 gap-3">
+                      <button onClick={() => setPackagingType('POUCH')} className={`p-3 rounded-lg border-2 ${packagingType === 'POUCH' ? 'border-nature-500 bg-nature-50 text-nature-700 font-bold' : 'border-slate-200'}`}>Pouch</button>
+                      <button onClick={() => setPackagingType('TIN')} className={`p-3 rounded-lg border-2 ${packagingType === 'TIN' ? 'border-nature-500 bg-nature-50 text-nature-700 font-bold' : 'border-slate-200'}`}>Tin</button>
+                   </div>
+                </div>
+
+                <div>
+                   <label className="block text-sm font-bold text-slate-700 mb-1">Weight to Pack (Max Available: {selectedRecipe.totalWeight.toFixed(1)} kg)</label>
+                   <div className="relative">
+                      <input 
+                        type="number" 
+                        className="w-full p-3 pl-10 border border-slate-300 rounded-lg focus:ring-2 focus:ring-nature-500" 
+                        value={weightToPack} 
+                        onChange={e => setWeightToPack(e.target.value)} 
+                        max={selectedRecipe.totalWeight}
+                        placeholder="0.0"
+                      />
+                      <Scale size={18} className="absolute left-3 top-3.5 text-slate-400" />
+                   </div>
+                   <p className="text-xs text-slate-400 mt-1">This will consume oldest batches first (FIFO)</p>
+                </div>
+
+                <div className="bg-slate-50 p-4 rounded-lg flex justify-between items-center">
+                   <span className="text-sm font-bold text-slate-600">Estimated Output:</span>
+                   <span className="text-2xl font-bold text-nature-700">{calculatedYield} units</span>
+                </div>
+
+                {!isYieldValid && weightToPack && (
+                   <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm font-bold flex items-center animate-pulse">
+                      <AlertCircle size={16} className="mr-2" /> Insufficient weight for 1 unit (0 output)
+                   </div>
+                )}
+
+                {!hasStock && isYieldValid && (
+                   <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm font-bold flex flex-col items-start animate-pulse">
+                      <div className="flex items-center mb-1"><AlertCircle size={16} className="mr-2" /> Insufficient Inventory</div>
+                      <span className="text-xs ml-6">Missing: {missingItems.join(', ')}</span>
+                   </div>
+                )}
+                
+                <div className="flex space-x-3 pt-4">
+                   <button onClick={() => setShowModal(false)} className="flex-1 py-3 text-slate-500 hover:bg-slate-50 rounded-lg font-bold">Cancel</button>
+                   <button onClick={handleCompletePacking} disabled={!hasStock || !weightToPack || !isYieldValid || parseFloat(weightToPack) > selectedRecipe.totalWeight} className="flex-1 py-3 bg-earth-800 text-white rounded-lg font-bold disabled:opacity-50">Confirm Pack</button>
+                </div>
+             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default PackingPage;
